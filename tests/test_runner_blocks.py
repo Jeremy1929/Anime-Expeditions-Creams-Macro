@@ -504,3 +504,166 @@ def test_auto_upgrade_click_gives_up_when_the_panel_never_opens(monkeypatch):
 
     assert any("not found on the info panel" in message for message in runner.logs)
     assert [item.args for item in runner._mouse.click.call_args_list] == [(100, 200)]
+
+
+# ---------------------------------------------------------------------------
+# Navigation recovery: gamemode card search widening
+# ---------------------------------------------------------------------------
+
+class _CardRunner:
+    """Just enough runner for _find_gamemode_card."""
+
+    def __init__(self, boxed, wide):
+        self._boxed, self._wide = boxed, wide
+        self.searches = []
+        self.logs = []
+
+    _find_gamemode_card = None  # bound below
+
+    def _log(self, msg):
+        self.logs.append(msg)
+
+
+def _make_card_runner(boxed, wide):
+    from core.runner import MacroRunner
+    r = _CardRunner(boxed, wide)
+    r._find_gamemode_card = MacroRunner._find_gamemode_card.__get__(r, _CardRunner)
+    return r
+
+
+def _patch_card_search(monkeypatch, runner):
+    from core import runner as runner_mod
+
+    def wait_for_image_any(hwnd, names, region=None, timeout=None, stop_event=None):
+        runner.searches.append("boxed" if region else "wide")
+        # Mirrors the real helper: (None, None) when nothing matched.
+        found = runner._boxed if region else runner._wide
+        return (found, "expedition") if found is not None else (None, None)
+
+    monkeypatch.setattr(runner_mod.vision, "wait_for_image_any", wait_for_image_any)
+
+
+def test_gamemode_card_found_in_the_panel_never_widens(monkeypatch):
+    """The boxed search exists to keep the 3D viewport out of the search --
+    a hit there must not trigger a second, wider scan."""
+    import threading
+
+    runner = _make_card_runner(boxed={"cx": 700, "cy": 200, "score": 0.98}, wide=None)
+    _patch_card_search(monkeypatch, runner)
+
+    match, _ = runner._find_gamemode_card(1, threading.Event(), ("expedition",), "Expedition")
+    assert match is not None
+    assert runner.searches == ["boxed"]
+
+
+def test_gamemode_card_outside_the_panel_is_still_found(monkeypatch):
+    """The menu has gained cards (Tower, Event), so a mode can render outside
+    GAMEMODE_CARD_REGION. That used to fail the whole task."""
+    import threading
+
+    runner = _make_card_runner(boxed=None, wide={"cx": 120, "cy": 640, "score": 0.95})
+    _patch_card_search(monkeypatch, runner)
+
+    match, _ = runner._find_gamemode_card(1, threading.Event(), ("expedition",), "Expedition")
+    assert match is not None, "a card outside the box must still be found"
+    assert runner.searches == ["boxed", "wide"]
+    assert any("widening" in m for m in runner.logs)
+
+
+def test_gamemode_card_genuinely_absent_reports_nothing(monkeypatch):
+    import threading
+
+    runner = _make_card_runner(boxed=None, wide=None)
+    _patch_card_search(monkeypatch, runner)
+
+    match, name = runner._find_gamemode_card(1, threading.Event(), ("expedition",), "Expedition")
+    assert (match, name) == (None, None)
+    assert runner.searches == ["boxed", "wide"]
+
+
+def test_gamemode_card_does_not_widen_after_a_stop(monkeypatch):
+    """Stop must not be followed by another 5s scan."""
+    import threading
+
+    runner = _make_card_runner(boxed=None, wide={"cx": 1, "cy": 1, "score": 1.0})
+    _patch_card_search(monkeypatch, runner)
+
+    stop = threading.Event()
+    stop.set()
+    runner._find_gamemode_card(1, stop, ("expedition",), "Expedition")
+    assert runner.searches == ["boxed"]
+
+
+# ---------------------------------------------------------------------------
+# AFK Chamber: click out instead of polling a dead screen
+# ---------------------------------------------------------------------------
+
+class _AfkRunner:
+    def __init__(self, match=None, raises=False):
+        self._match, self._raises = match, raises
+        self._mouse = MagicMock()
+        self.logs = []
+        self.searches = 0
+
+    _dismiss_afk_chamber = None  # bound below
+
+    def _log(self, msg):
+        self.logs.append(msg)
+
+    def _set_status(self, **kw):
+        pass
+
+
+def _make_afk_runner(match=None, raises=False, monkeypatch=None):
+    from core import runner as runner_mod
+    from core.runner import MacroRunner
+
+    r = _AfkRunner(match, raises)
+    r._dismiss_afk_chamber = MacroRunner._dismiss_afk_chamber.__get__(r, _AfkRunner)
+
+    def find_image(hwnd, name, region=None, **kw):
+        r.searches += 1
+        if r._raises:
+            raise runner_mod.vision.TemplateNotFound(name)
+        return r._match
+
+    monkeypatch.setattr(runner_mod.vision, "find_image", find_image)
+    monkeypatch.setattr(runner_mod.wm, "get_window_rect_screen", lambda hwnd: (10, 20, 1152, 756))
+    return r
+
+
+def test_afk_chamber_is_clicked_out_of(monkeypatch):
+    from core.runner_constants import AFK_CHAMBER_EXIT_CLICK
+
+    r = _make_afk_runner(match={"cx": 576, "cy": 44, "score": 0.99}, monkeypatch=monkeypatch)
+    at = r._dismiss_afk_chamber(1, 0.0)
+
+    assert r._mouse.click.call_args.args == (10 + AFK_CHAMBER_EXIT_CLICK[0],
+                                             20 + AFK_CHAMBER_EXIT_CLICK[1])
+    assert at > 0.0, "the click time must be returned so the cooldown can start"
+    assert any("AFK Chamber" in m for m in r.logs)
+
+
+def test_afk_chamber_absent_does_nothing(monkeypatch):
+    r = _make_afk_runner(match=None, monkeypatch=monkeypatch)
+    assert r._dismiss_afk_chamber(1, 0.0) == 0.0
+    r._mouse.click.assert_not_called()
+
+
+def test_afk_chamber_without_a_reference_image_is_skipped(monkeypatch):
+    """Optional check: a missing afk_chamber.png must not break a run."""
+    r = _make_afk_runner(raises=True, monkeypatch=monkeypatch)
+    assert r._dismiss_afk_chamber(1, 0.0) == 0.0
+    r._mouse.click.assert_not_called()
+
+
+def test_afk_chamber_is_not_reclicked_inside_the_cooldown(monkeypatch):
+    """The banner lingers while the exit animates -- clicking every poll would
+    fight the transition the first click started."""
+    import time as _time
+
+    r = _make_afk_runner(match={"cx": 576, "cy": 44, "score": 0.99}, monkeypatch=monkeypatch)
+    just_now = _time.time()
+    assert r._dismiss_afk_chamber(1, just_now) == just_now
+    r._mouse.click.assert_not_called()
+    assert r.searches == 0, "the cooldown should short-circuit before searching"
