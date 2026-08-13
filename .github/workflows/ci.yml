@@ -56,28 +56,3 @@ jobs:
           set -e
           for f in ui/*.js; do node --check "$f"; done
 
-      - name: Post to Discord git log
-        # Only for actual pushes to main, not PRs (a fork's PR run has no
-        # access to repo secrets anyway) -- always() so this still posts
-        # even if a step above failed, since a "did the build break" ping
-        # is exactly what a git-log channel is for.
-        #
-        # Lists EVERY commit in this push, not just HEAD -- a push that
-        # bundles several local commits together used to only ever report
-        # the last one, silently dropping every earlier commit from the
-        # log channel with no sign anything was missing. See
-        # .github/scripts/post_git_log.py for the actual logic -- moved out
-        # of an inline bash+jq block after THAT version passed every local
-        # test yet still sent Discord invalid JSON on the real runner (an
-        # HTTP 400 only visible once the step was changed to stop
-        # discarding curl's response), a shell-quoting bug not worth
-        # continuing to chase in YAML when Python's json module can't
-        # produce invalid JSON by construction.
-        if: always() && github.event_name == 'push'
-        shell: bash
-        env:
-          DISCORD_GIT_LOGS_WEBHOOK: ${{ secrets.DISCORD_GIT_LOGS_WEBHOOK }}
-          JOB_STATUS: ${{ job.status }}
-          BEFORE_SHA: ${{ github.event.before }}
-          REPO_URL: https://github.com/${{ github.repository }}
-        run: python .github/scripts/post_git_log.py

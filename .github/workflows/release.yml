@@ -132,20 +132,6 @@ jobs:
             dist/Creams-Macro-Anime-Expeditions-Windows.zip
             dist/Creams Macro - Anime Expeditions.exe
 
-      # Python script, not inline bash+jq -- the jq version sent Discord
-      # invalid JSON (HTTP 400, code 50109) on the real runner the first
-      # time a changelog contained non-ASCII characters (v0.3.0's em
-      # dashes), despite the same logic validating fine locally: the exact
-      # failure mode .github/scripts/post_git_log.py already documents and
-      # solved for the git-log channel. See post_release_log.py.
-      - name: Post changelog to Discord
-        env:
-          DISCORD_UPDATE_LOGS_WEBHOOK: ${{ secrets.DISCORD_UPDATE_LOGS_WEBHOOK }}
-          BODY: ${{ steps.changelog.outputs.body }}
-          TAG_NAME: ${{ github.ref_name }}
-          RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-        run: python .github/scripts/post_release_log.py
-
   # macOS build -- same zip idea as the Windows job (app + editable Assets
   # side by side), its own asset name (see core/updater.py's per-platform
   # RELEASE_ZIP_NAME). Runs AFTER the Windows job on purpose: that job
