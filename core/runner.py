@@ -172,6 +172,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # Expedition camera's O-zoom hold (Settings > Debug).
         self._expedition_color_buttons = True
         self._exp_last_sighting_at = 0.0
+        self._exp_failed_extracts = 0
         # Consecutive polls that found a checkpoint Continue, and when that
         # run of them started. See EXPEDITION_STALL_TIMEOUT -- a checkpoint
         # that never clears would otherwise be re-clicked all the way to
@@ -928,6 +929,27 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
                     continue
                 if not task_result:
                     self._set_status(action="Idle")
+                    return
+
+                # Auto Challenge after each finished task (we're back at the
+                # lobby here). This is what catches the cases the between-
+                # repeats hook inside _run_task can't: a single-repeat task,
+                # or the LAST repeat of any task (the in-task hook is gated
+                # by `not is_last_repeat`). Without this, a slot that became
+                # ready at the last :00/:30 boundary just sat unplayed until
+                # the next Start press -- the "challenges are ready but it
+                # keeps doing the tasks normally" report. Runs before the
+                # other diversions because Challenge has priority when
+                # several come due at once (same ordering as the start of
+                # _run and the between-repeats hook).
+                if self._challenge_has_ready_stage():
+                    self._run_guarded_phase(
+                        "Challenge", hwnd, stop_event,
+                        lambda: self._run_challenges(
+                            hwnd, stop_event, coords, default_walk_paths, webhook))
+                if self._current_hwnd and wm.is_window(self._current_hwnd):
+                    hwnd = self._current_hwnd
+                if self._checkpoint(stop_event):
                     return
 
                 # Auto Crafting after each finished task (we're back at the
@@ -1749,6 +1771,10 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
         # "exp_extract_continue" choice on this same screen) every sighting
         # up to extract_after, only accept the one right after that.
         self._expedition_extract_count = 0
+        # Checkpoints where extraction was attempted and did not take. Past
+        # EXPEDITION_EXTRACT_ATTEMPTS_BEFORE_PLAYING_ON the run stops asking
+        # and plays itself out -- the host may simply not be extracting.
+        self._exp_failed_extracts = 0
         self._expedition_extract_accept_at = _parse_extract_after(
             task.get("extract_after")) + 1
         self._exp_last_sighting_at = 0.0  # fresh match, fresh sighting-debounce clock (see EXP_COLOR_SIGHTING_DEBOUNCE)
@@ -3998,8 +4024,9 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             return False
         time.sleep(SETTLE_DELAY)
 
-        self._set_status(action="Clicking Villian Invasion...")
-        match = self._click_found_image(hwnd, "Villian_Invasion", EVENT_SCREEN_TIMEOUT, stop_event)
+        # (1) Click Villain Invasion from the event menu
+        self._set_status(action="Clicking Villain Invasion...")
+        match = self._click_found_image(hwnd, "Villain_Invasion", EVENT_SCREEN_TIMEOUT, stop_event)
         if match is None:
             self._spam_back_until_gone(hwnd, stop_event)
             return False
@@ -4007,42 +4034,7 @@ class MacroRunner(BountyOps, ChallengeOps, CraftingOps, FuelOps, ShopOps, Expedi
             return False
         time.sleep(SETTLE_DELAY)
 
-        self._set_status(action="Clicking Event gamemode...")
-        # Three steps on this screen. (1) WAIT for the Event gamemode screen
-        # to actually be up before touching the card -- nav_event's own
-        # verify only proves the lobby button was clicked, not that this
-        # screen has rendered, and a blind settle alone clicked the card
-        # mid-animation (reported: "click too fast"). The event_gamemode
-        # image is this screen's anchor. If the crop doesn't match, the
-        # user-configured coordinate below is still the fallback (same
-        # blind-click spirit as Story's story_click).
-        try:
-            match = vision.wait_for_image(
-                hwnd, "event_gamemode", timeout=EVENT_SCREEN_TIMEOUT, stop_event=stop_event)
-        except vision.TemplateNotFound as exc:
-            self._log(f"[Macro] {exc}")
-            return False
-        if match is not None:
-            self._log(f"[Macro] Event gamemode screen is up (score {match['score']:.2f}).")
-        else:
-            if stop_event.is_set():
-                return False
-            self._log(f'[Macro] "event_gamemode" not found within {EVENT_SCREEN_TIMEOUT:.0f}s -- '
-                       "clicking the configured card point anyway.")
-
-        # (2) The Event gamemode CARD sits at a fixed, user-configurable
-        # point (Settings > Debug > Macro Coordinates), clicked by coordinate
-        # -- clicking the matched crop's center didn't register reliably
-        # (reported), so the card is never image-clicked.
-        egm_x, egm_y = self._cxy("event_gamemode")
-        left, top, _, _ = wm.get_window_rect_screen(hwnd)
-        self._log(f"[Macro] Clicking the Event gamemode card at ({egm_x}, {egm_y}).")
-        self._mouse.click(left + egm_x, top + egm_y)
-        if self._checkpoint(stop_event):
-            return False
-        time.sleep(SETTLE_DELAY)
-
-        # (3) Then the event_gamemode image (the button with the "Event
+        # (2) Then the event_gamemode image (the button with the "Event
         # Gamemode" text) -- the click that actually opens the villain list,
         # found and clicked by image search. Its absence after the card click
         # is the sign the card click failed (spam back + retry from lobby).

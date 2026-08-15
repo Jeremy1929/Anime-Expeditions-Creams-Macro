@@ -96,6 +96,11 @@ def _wire(monkeypatch, *, marker=True, prompt=True, events=(("w", "down", 0.0),)
         return None
 
     monkeypatch.setattr(rx.vision, "find_image", find_image)
+    # No encounter Continue unless a test asks for one. Without this the
+    # handler calls the REAL find_color_run, which captures the live screen:
+    # slow (a four-second deadline of real captures per test) and genuinely
+    # nondeterministic, since whatever is actually on screen can satisfy it.
+    monkeypatch.setattr(rx.vision, "find_color_run", lambda *_a, **_k: None)
     monkeypatch.setattr(rx.vision, "click_match", lambda m, h, match, **k: r_clicks.append(match))
     r_clicks = []
 
@@ -119,7 +124,12 @@ def _wire(monkeypatch, *, marker=True, prompt=True, events=(("w", "down", 0.0),)
     monkeypatch.setattr(rx.walk_paths, "load_path", lambda n: {"events": list(events)})
     monkeypatch.setattr(rx.walk_paths, "replay_events",
                         lambda e, kb, stop, sprint=False: replayed.append(True))
-    monkeypatch.setattr(rx.time, "sleep", lambda s: None)
+    # A clock that only moves when something sleeps. Without this, any
+    # deadline loop in the handler busy-spins for its full real duration,
+    # because sleep is a no-op here.
+    now = {"t": 1000.0}
+    monkeypatch.setattr(rx.time, "sleep", lambda s: now.__setitem__("t", now["t"] + max(s, 0.05)))
+    monkeypatch.setattr(rx.time, "time", lambda: now["t"])
     return replayed
 
 
@@ -155,15 +165,22 @@ def test_no_marker_means_no_action(monkeypatch):
 
 
 def test_unmapped_map_is_left_alone(monkeypatch):
-    """Adding maps stays additive -- an unmapped one must not walk blindly."""
+    """Adding maps stays additive -- an unmapped one must not walk blindly.
+
+    An unmapped map now gets one look at the encounter's own Continue first,
+    so the Continue is explicitly absent here; the invariant under test is
+    that with nothing to click and nothing to walk, nothing is clicked.
+    """
+    from core import runner_expedition as rx
     replayed = _wire(monkeypatch, mapping={"Rose Kingdom": "RK route"})
+    monkeypatch.setattr(rx.vision, "find_color_run", lambda *_a, **_k: None)
     r = _Runner(task={"map": "Some New Map"})
 
     r._handle_expedition_encounter(1, threading.Event(), _settled())
 
     assert replayed == []
     r._mouse.click.assert_not_called()
-    assert any("no encounter walk is mapped" in m for m in r.logs)
+    assert any("leaving it alone" in m for m in r.logs)
 
 
 def test_a_walk_that_lands_wrong_does_not_click_blindly(monkeypatch):
@@ -463,3 +480,77 @@ def test_without_the_crops_it_falls_back_to_the_old_fixed_clicks(monkeypatch):
     clicks = [c.args for c in r._mouse.click.call_args_list]
     assert clicks[1:] == [(10 + x, 20 + y) for x, y in ENCOUNTER_DIALOGUE_CLICKS]
     assert any("falling back" in m for m in r.logs)
+
+
+# ---------------------------------------------------------------------------
+# The encounter's own Continue button
+# ---------------------------------------------------------------------------
+
+def _with_continue(monkeypatch, present):
+    """Make the colour engine report an encounter Continue, or not."""
+    from core import runner_expedition as rx
+    monkeypatch.setattr(rx.vision, "find_color_run",
+                        lambda h, band, mask, run: {"cx": 575, "cy": 588} if present else None)
+
+
+def test_a_continue_ends_the_encounter_without_walking(monkeypatch):
+    """Strictly better than the walk when it is there: milliseconds, works on
+    any map rather than the four with a bundled route, and cannot strand the
+    character somewhere a recording did not expect."""
+    replayed = _wire(monkeypatch)
+    _with_continue(monkeypatch, True)
+    r = _Runner(task={"map": "Rose Kingdom"})
+
+    out = r._handle_expedition_encounter(1, threading.Event(), _settled())
+
+    assert replayed == [], "walked even though Continue was available"
+    assert r.clicked_images == [], "opened Settings even though Continue was available"
+    assert out["handled_at"] > 0.0, "the encounter must still be marked handled"
+    assert any("no walk needed" in m for m in r.logs)
+
+
+def test_without_a_continue_it_still_walks_the_route(monkeypatch):
+    """The walk stays as the fallback -- the Continue is a recent addition
+    and the older flow is the one known to work."""
+    replayed = _wire(monkeypatch)
+    _with_continue(monkeypatch, False)
+    r = _Runner(task={"map": "Rose Kingdom"})
+
+    r._handle_expedition_encounter(1, threading.Event(), _settled())
+
+    assert replayed == [True]
+    assert r.clicked_images == ["nav_settings"]
+
+
+# ---------------------------------------------------------------------------
+# Maps with no bundled route
+# ---------------------------------------------------------------------------
+
+def test_an_unmapped_map_is_handled_by_its_continue(monkeypatch):
+    """Only four maps have a bundled route; everywhere else the encounter
+    used to be logged and abandoned. The Continue needs nothing recorded, so
+    it works where the walk cannot."""
+    replayed = _wire(monkeypatch, mapping={})          # nothing mapped at all
+    _with_continue(monkeypatch, True)
+    r = _Runner(task={"map": "Somewhere Unmapped"})
+
+    out = r._handle_expedition_encounter(1, threading.Event(), _settled())
+
+    assert replayed == [], "there is no route to walk"
+    assert out["handled_at"] > 0.0, "the encounter must be marked handled"
+    assert any("no walk needed" in m for m in r.logs)
+    assert not any("leaving it alone" in m for m in r.logs)
+
+
+def test_an_unmapped_map_with_no_continue_is_still_left_alone(monkeypatch):
+    """Nothing to walk and nothing to click means there is genuinely nothing
+    to do -- and it must say so rather than clicking at the world."""
+    replayed = _wire(monkeypatch, mapping={})
+    _with_continue(monkeypatch, False)
+    r = _Runner(task={"map": "Somewhere Unmapped"})
+
+    out = r._handle_expedition_encounter(1, threading.Event(), _settled())
+
+    assert replayed == []
+    assert out["handled_at"] > 0.0, "still marked handled so it is not retried forever"
+    assert any("leaving it alone" in m for m in r.logs)

@@ -184,11 +184,6 @@ MACRO_COORD_DEFAULTS = {
     "story_click_x": 666, "story_click_y": 147,
     "stage_row_x": 246, "stage_row_y": 230, "stage_row_height": 56,
     "act_row_x": 250, "act_row_y": 267, "act_row_height": 129,
-    # Event gamemode card click point (see runner._reach_event_act_selected):
-    # the card is clicked HERE by coordinate first, then the event_gamemode
-    # button (the image with the "Event Gamemode" text) is found and clicked
-    # by image search.
-    "event_gamemode_x": 152, "event_gamemode_y": 253,
     "challenge_stage_1_x": 460, "challenge_stage_1_y": 277,
     "challenge_stage_2_x": 460, "challenge_stage_2_y": 400,
     "challenge_stage_3_x": 460, "challenge_stage_3_y": 533,
@@ -2457,6 +2452,27 @@ class Api:
     def list_templates(self) -> list:
         return tpl.list_templates()
 
+    def list_example_templates(self) -> list:
+        """The bundled example routines, for the Macro Manager's Examples
+        picker. Blocks are included so the picker can show what each one
+        actually contains rather than just a name."""
+        return tpl.list_examples()
+
+    def use_example_template(self, name: str) -> dict:
+        """Copy a bundled example into the user's own templates.
+
+        A copy, not a reference: the example stays untouched, and picking
+        the same one twice gives a second copy rather than overwriting
+        edits made to the first (see tpl.copy_example -- it has to work the
+        free name out itself, because save_template's own rule is to
+        overwrite a matching name, which is what makes Save behave).
+        """
+        saved_name = tpl.copy_example(name)
+        if not saved_name:
+            return {"ok": False, "reason": "no_such_example"}
+        self.push_log(f"Added example template '{saved_name}'.")
+        return {"ok": True, "name": saved_name}
+
     def save_template(self, name: str, blocks: list) -> dict:
         saved_name = tpl.save_template(name, blocks)
         self.push_log(f"Saved template '{saved_name}'.")
@@ -3866,12 +3882,23 @@ class Api:
         return {"ok": True}
 
     YOUTUBE_CHANNEL_URL = "https://www.youtube.com/@Cweamya/videos"
+    # Where people share routines with each other. The Examples picker points
+    # at it, since only a handful can reasonably ship with the app.
+    COMMUNITY_URL = "https://discord.gg/creams"
 
     def open_youtube_channel(self) -> dict:
         # The one-time subscribe prompt's button -- opens the creator's
         # channel in the default browser.
         import webbrowser
         webbrowser.open(self.YOUTUBE_CHANNEL_URL)
+        return {"ok": True}
+
+    def open_community(self) -> dict:
+        # Examples picker -> "More examples". Opened in the default browser
+        # rather than navigated to: the UI runs inside the app's own webview,
+        # so an <a href> would replace the macro with a web page.
+        import webbrowser
+        webbrowser.open(self.COMMUNITY_URL)
         return {"ok": True}
 
     def export_failure_report(self) -> dict:

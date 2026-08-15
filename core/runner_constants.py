@@ -88,6 +88,17 @@ START_GAME_BUTTON_WAIT_TIMEOUT = 5.0  # how long to poll for Start Game right af
 # a step it is used instead (nav_settings / nav_closeui are already shipped),
 # because an image survives a layout shift and a coordinate does not.
 ENCOUNTER_REGION = (414, 58, 41, 45)      # the encounter marker's HUD slot
+# An encounter now offers a Continue of its own -- the same green face the
+# wave checkpoints use, which the colour engine already finds. Clicking it
+# resolves the encounter outright, with no teleport, no route and no
+# dialogue. Tried FIRST for that reason: it costs one pixel scan, works on
+# every map rather than the four with a bundled route, and cannot land the
+# character somewhere a recorded walk did not expect.
+#
+# The walk remains as the fallback, because this is a recent change and the
+# older flow is known to work. How long to look for that Continue before
+# falling back:
+ENCOUNTER_CONTINUE_TIMEOUT = 4.0
 ENCOUNTER_TELEPORT_SPAWN_CLICK = (621, 443)  # "teleport to spawn" inside Settings
 # Dialogue advance clicks, in order. The prompt is opened with E; these step
 # through the exchange that follows.
@@ -168,6 +179,25 @@ EXPEDITION_WAVE_TIMEOUT = 8.0  # how long to wait for Continue_2/extract after c
 # go anywhere in the meantime (see _check_expedition_wave_result), so this
 # just avoids burning a couple of whole retry cycles on the same modal.
 EXPEDITION_EXTRACT_CONFIRM_TIMEOUT = 16.0
+# Extraction is not entirely yours to decide. In a matchmaking lobby the run
+# carries on while other players keep going, so the confirm can simply never
+# register no matter how cleanly it is clicked. The old behaviour retried the
+# whole extract chain at EVERY later checkpoint -- the count is already past
+# accept-at by then -- which is minutes of clicking at something that is not
+# going to happen, repeated for the rest of the match.
+#
+# After this many checkpoints where extraction was attempted and did not
+# take, stop asking and just play the run out: decline each checkpoint and
+# let it end on its own. Losing the early exit is a far smaller cost than
+# stalling every checkpoint from here to the end.
+EXPEDITION_EXTRACT_ATTEMPTS_BEFORE_PLAYING_ON = 3
+# How long to wait for the result screen before believing an extract worked.
+# The checkpoint bands going quiet is only ABSENCE -- a reward card covering
+# the bottom band, or a wave transition landing between the two reads, empties
+# them just as well as extracting does. Declaring a win on that leaves a live
+# run. leave_stage/repeat_stage only exist on the result screen, so finding
+# one is the positive evidence that absence is not.
+EXPEDITION_RESULT_CONFIRM_TIMEOUT = 6.0
 EXTRACT_CONFIRM_SETTLE = 5.0  # settle after clicking "extract" -- reported as a click that can visually land without registering
 EXPEDITION_CONTINUE_COOLDOWN = 5.0  # settle after exp_continue/continue_2 -- a lingering banner right after the
 # How long a checkpoint may stay up, being re-found and re-clicked on every
@@ -332,7 +362,7 @@ TOWER_SCREEN_TIMEOUT = 10.0  # how long to wait for each Tower screen (nav_tower
 
 # Reference-window region (x, y, w, h) of the Tower game mode.
 # The tower's recent floor is always in this region but it is
-# subject to change
+# subject to change.
 TOWER_CARD_REGION = (565, 230, 770 - 565, 351 - 230)  # (565, 230) -> (770, 351)
 
 # Auto Bounty derives all objective clicks from the live board. These values
@@ -796,6 +826,21 @@ EXPEDITION_WAVE_REGION = (417, 16, 110, 33)
 # together than this, the wait never releases and the deferred placements
 # never happen. MATCH_RESULT_TIMEOUT is the only backstop.
 WAIT_WAVE_NO_COUNTER_SETTLE = 20.0
+# A hard ceiling on the whole wait, and the reason it exists is worth
+# writing down: the quiet-period release above is gated on a reward card
+# having been seen, because a card is proof the fighting started. Cards drop
+# for KILLS -- so a run that is going badly produces none, the gate never
+# arms, and the blocks behind this one never run.
+#
+# On Expedition those blocks are the deferred unit placements, which makes it
+# circular: the team is short the units that would earn the kills that would
+# produce the card that would release the units. Observed live as a pair of
+# runs that sat on "couldn't read the wave counter" for forty seconds, placed
+# three of six units, and lost in about a minute -- against ten-minute wins
+# on every run where the counter did read.
+#
+# So past this, release regardless of cards. Placing late beats never.
+WAIT_WAVE_UNREADABLE_CEILING = 30.0
 # A mid-run "Start Game?" stages a new sub-round, and the units already
 # placed run off the board entirely -- their tiles free up, so the Battle
 # phase is replayed from the top to put them back.
@@ -839,12 +884,7 @@ DEFAULT_COORDS = {
     "stage_row_height": STAGE_ROW_HEIGHT,
     "act_row_x": ACT_CLICK_BASE[0], "act_row_y": ACT_CLICK_BASE[1],
     "act_row_height": ACT_ROW_HEIGHT,
-    # Event gamemode card click point (see runner._reach_event_act_selected):
-    # the card is clicked HERE by coordinate, then the event_gamemode button
-    # (the image with the "Event Gamemode" text) is found and clicked by
-    # image search. No tuple constant above -- keep it in sync with main.py's
     # MACRO_COORD_DEFAULTS.
-    "event_gamemode_x": 152, "event_gamemode_y": 253,
     "challenge_stage_1_x": CHALLENGE_STAGE_CLICK["1"][0], "challenge_stage_1_y": CHALLENGE_STAGE_CLICK["1"][1],
     "challenge_stage_2_x": CHALLENGE_STAGE_CLICK["2"][0], "challenge_stage_2_y": CHALLENGE_STAGE_CLICK["2"][1],
     "challenge_stage_3_x": CHALLENGE_STAGE_CLICK["3"][0], "challenge_stage_3_y": CHALLENGE_STAGE_CLICK["3"][1],
